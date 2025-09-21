@@ -14,7 +14,6 @@ try:
     from sklearn.metrics.pairwise import cosine_similarity
     import nltk
     import traceback
-    import io
 except Exception as e:
     st.set_page_config(page_title="AI HR Resume Ranking", layout="wide")
     st.title("🤖 AI HR Resume Ranking (Import error)")
@@ -23,7 +22,7 @@ except Exception as e:
     st.stop()
 
 # -----------------------------
-# Ensure NLTK resources (download if missing)
+# Ensure NLTK resources
 # -----------------------------
 def ensure_nltk_resources():
     resources = {
@@ -51,14 +50,9 @@ def extract_text_from_pdf(uploaded_file):
     try:
         uploaded_file.seek(0)
         reader = PyPDF2.PdfReader(uploaded_file)
-        text_pages = []
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text_pages.append(page_text)
+        text_pages = [p.extract_text() for p in reader.pages if p.extract_text()]
         return "\n".join(text_pages)
     except Exception as e:
-        # return empty string and log
         st.warning(f"Could not extract PDF text from {getattr(uploaded_file, 'name', '')}: {e}")
         return ""
 
@@ -66,8 +60,7 @@ def extract_text_from_docx(uploaded_file):
     try:
         uploaded_file.seek(0)
         doc = docx.Document(uploaded_file)
-        paragraphs = [p.text for p in doc.paragraphs if p.text]
-        return "\n".join(paragraphs)
+        return "\n".join([p.text for p in doc.paragraphs if p.text])
     except Exception as e:
         st.warning(f"Could not extract DOCX text from {getattr(uploaded_file, 'name', '')}: {e}")
         return ""
@@ -80,8 +73,7 @@ def clean_text(text):
         stop_words = set(stopwords.words("english"))
         tokens = [lemmatizer.lemmatize(t) for t in tokens if t not in stop_words and t.strip()]
         return " ".join(tokens)
-    except Exception as e:
-        # In worst case return original lowercased text
+    except Exception:
         return (text or "").lower()
 
 # -----------------------------
@@ -119,73 +111,40 @@ with col_left:
         "Upload multiple resumes (PDF or DOCX)", type=["pdf", "docx"], accept_multiple_files=True
     )
 
-    col_buttons = st.columns([1, 1])
-    with col_buttons[0]:
-        rank_clicked = st.button("🚀 Rank Resumes")
-    with col_buttons[1]:
-        demo_clicked = st.button("🎯 Run demo (no upload)")
-
-with col_right:
-    st.subheader("🔎 Quick Tips")
-    st.markdown(
-        "- Paste a clear job description (responsibilities + required skills).\n"
-        "- Upload PDF / DOCX resumes.\n"
-        "- If the page is blank: run `streamlit run app.py --logger.level=debug` and copy the console error.\n\n"
-        "**Want this live on Streamlit Cloud?** Add the repo and deploy (I can provide steps)."
-    )
-
-# -----------------------------
-# Demo data (for testing)
-# -----------------------------
-sample_job = (
-    "Senior Python developer with experience in NLP, machine learning, and data processing. "
-    "Responsibilities: build models, preprocess text, and deploy APIs. Required skills: Python, NLTK, scikit-learn."
-)
-sample_resumes = {
-    "alice_cv.pdf": "Experienced Python developer with NLP and machine learning experience. Worked with NLTK and scikit-learn.",
-    "bob_cv.docx": "Data analyst familiar with Python and pandas. Some ML experience.",
-    "carol_resume.pdf": "Senior Machine Learning engineer, experience in NLP, transformers, BERT, Python."
-}
+    rank_clicked = st.button("🚀 Rank Resumes")
 
 # -----------------------------
 # Processing function
 # -----------------------------
 def process_and_display(job_desc_text, uploaded_files_list):
     try:
-        # Prepare resume texts
-        resume_texts = []
-        resume_names = []
+        resume_texts, resume_names = [], []
 
-        # If demo, use sample_resumes
-        if demo_clicked and not uploaded_files_list:
-            for name, txt in sample_resumes.items():
-                resume_names.append(name)
-                resume_texts.append(clean_text(txt))
-        else:
-            for f in uploaded_files_list:
-                # reset pointer
-                try:
-                    f.seek(0)
-                except:
-                    pass
+        for f in uploaded_files_list:
+            try:
+                f.seek(0)
+            except:
+                pass
 
-                if f.name.lower().endswith(".pdf"):
-                    raw = extract_text_from_pdf(f)
-                elif f.name.lower().endswith(".docx"):
-                    raw = extract_text_from_docx(f)
-                else:
-                    raw = ""
-                if not raw.strip():
-                    st.warning(f"No text extracted from {f.name}; skipping.")
-                    continue
-                resume_names.append(f.name)
-                resume_texts.append(clean_text(raw))
+            if f.name.lower().endswith(".pdf"):
+                raw = extract_text_from_pdf(f)
+            elif f.name.lower().endswith(".docx"):
+                raw = extract_text_from_docx(f)
+            else:
+                raw = ""
+
+            if not raw.strip():
+                st.warning(f"No text extracted from {f.name}; skipping.")
+                continue
+
+            resume_names.append(f.name)
+            resume_texts.append(clean_text(raw))
 
         if not resume_texts:
-            st.warning("No resume text found. Upload valid PDF/DOCX resumes or use the demo.")
+            st.warning("No resume text found. Please upload valid PDF/DOCX resumes.")
             return
 
-        job_clean = clean_text(job_desc_text or sample_job)
+        job_clean = clean_text(job_desc_text)
 
         # Vectorize and compute similarity
         documents = [job_clean] + resume_texts
@@ -210,14 +169,10 @@ def process_and_display(job_desc_text, uploaded_files_list):
         st.subheader("📊 Ranked Candidates")
         st.dataframe(results, use_container_width=True)
 
-        # Bar chart (matplotlib)
+        # Bar chart
         st.subheader("📈 Match Score Chart")
         fig, ax = plt.subplots(figsize=(8, 4))
-        colors = []
-        top_name = results.loc[0, "Resume"]
-        for name in results["Resume"]:
-            colors.append("#2ca02c" if name == top_name else "#1f77b4")
-
+        colors = ["#2ca02c" if name == top["Resume"] else "#1f77b4" for name in results["Resume"]]
         bars = ax.bar(results["Resume"], results["Match Score (%)"], color=colors, edgecolor="black", alpha=0.9)
         ax.set_ylabel("Match Score (%)")
         ax.set_ylim(0, 100)
@@ -240,22 +195,18 @@ def process_and_display(job_desc_text, uploaded_files_list):
         st.exception(e)
         st.text("Traceback (for debugging):")
         st.text(traceback.format_exc())
-        return
 
 # -----------------------------
 # Trigger processing
 # -----------------------------
-# Prioritize explicit Rank button; allow demo button to act if pressed alone
 if rank_clicked:
     if not job_description:
         st.warning("Please enter a job description before ranking.")
+    elif not uploaded_files:
+        st.warning("Please upload at least one resume.")
     else:
-        process_and_display(job_description, uploaded_files or [])
-elif demo_clicked:
-    # demo uses sample job + sample resumes
-    st.info("Running demo with sample job description & resumes.")
-    process_and_display(sample_job, [])
+        process_and_display(job_description, uploaded_files)
 
-# Small footer
+# Footer
 st.markdown("---")
 st.markdown("Built with Python • Streamlit • NLTK • scikit-learn")
